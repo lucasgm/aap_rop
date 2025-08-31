@@ -1,0 +1,42 @@
+#roles/deploy_service/tasks/stop_only_linux.yml
+- name: Build stop/stopHealth (Linux)
+  ansible.builtin.set_fact:
+    _stop: >-
+      {{
+        phase_services | map(attribute='containers') | sum(start=[])
+        | map(attribute='serviceCommands') | select('defined')
+        | map(attribute='stop') | reject('equalto', None)
+        | map('trim') | reject('equalto','') | list
+      }}
+    _stophealth: >-
+      {{
+        phase_services | map(attribute='containers') | sum(start=[])
+        | map(attribute='serviceCommands') | select('defined')
+        | map(attribute='stopHealth') | reject('equalto', None)
+        | map('trim') | reject('equalto','') | list
+      }}
+
+- block:
+    - name: (check) would stop (Linux)
+      ansible.builtin.debug: { var: _stop }
+    - name: (check) would verify stopped (Linux)
+      ansible.builtin.debug: { var: _stophealth }
+  when: ansible_check_mode | default(false)
+
+- block:
+    - name: Stop services (Linux)
+      ansible.builtin.shell: "{{ item }}"
+      args: { executable: /bin/bash }
+      loop: "{{ _stop }}"
+      register: _stop_out
+      failed_when: false
+      changed_when: true
+
+    - name: Verify stopped (Linux)
+      ansible.builtin.shell: "{{ item }}"
+      args: { executable: /bin/bash }
+      loop: "{{ _stophealth }}"
+      register: _stop_health_out
+      failed_when: false
+      changed_when: false
+  when: not (ansible_check_mode | default(false))
