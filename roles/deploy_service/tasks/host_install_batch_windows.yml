@@ -1,0 +1,75 @@
+#roles/deploy_service/tasks/host_install_batch_windows.yml
+# ── CHECK MODE: only show what we would do, no changes ───────────────────────
+- block:
+    - name: (check) BEFORE INSTALL hooks to run
+      ansible.builtin.debug:
+        var: _install_before
+      when: _install_before | length > 0
+
+    - name: (check) Would run single YUM line
+      ansible.builtin.debug:
+        msg: >-
+          /usr/bin/sudo yum install -y
+          {% if options.PROXY | default('') | trim %} --setopt=proxy={{ options.PROXY | trim }}{% endif %}
+          {{ yum_repo_flags | default('') }}
+          {% for f in _rpm_paths %}"{{ f }}"{% if not loop.last %} {% endif %}{% endfor %}
+
+    - name: (check) AFTER INSTALL hooks to run
+      ansible.builtin.debug:
+        var: _install_after
+      when: _install_after | length > 0
+
+    - name: Record simulated install summary (Linux, check mode)
+      ansible.builtin.set_fact:
+        install_summary:
+          host: "{{ inventory_hostname }}"
+          success_artifacts: []
+          failed_artifacts: []
+  when: ansible_check_mode | default(false)
+
+# ── REAL RUN ─────────────────────────────────────────────────────────────────
+- block:
+    - name: BEFORE INSTALL hooks
+      ansible.builtin.shell: "{{ item }}"
+      args: { executable: /bin/bash }
+      loop: "{{ _install_before }}"
+      register: _before_out
+      failed_when: false
+      changed_when: true
+      when: _install_before | length > 0
+
+    - name: Build single YUM command
+      ansible.builtin.set_fact:
+        _yum_cmd: >-
+          {% if (_rpm_paths | length) == 0 %}
+          echo "No RPMs to install on {{ inventory_hostname }}.";
+          {% else %}
+          /usr/bin/sudo yum install -y
+          {% if options.PROXY | default('') | trim %} --setopt=proxy={{ options.PROXY | trim }}{% endif %}
+          {{ yum_repo_flags | default('') }}{% for f in _rpm_paths %} "{{ f }}"{% endfor %};
+          {% endif %}
+
+    - name: Run single YUM install
+      ansible.builtin.shell: "{{ _yum_cmd }}"
+      args: { executable: /bin/bash }
+      register: _yum_run
+      changed_when: (_rpm_paths | length) > 0
+      failed_when: false
+
+    - name: AFTER INSTALL hooks
+      ansible.builtin.shell: "{{ item }}"
+      args: { executable: /bin/bash }
+      loop: "{{ _install_after }}"
+      register: _after_out
+      failed_when: false
+      changed_when: true
+      when: _install_after | length > 0
+
+    - name: Record install summary (Linux)
+      ansible.builtin.set_fact:
+        install_summary:
+          host: "{{ inventory_hostname }}"
+          success_artifacts: "{{ (_rpm_paths | length > 0 and _yum_run.rc == 0) | ternary(_rpm_paths, []) }}"
+          failed_artifacts:  "{{ (_rpm_paths | length > 0 and _yum_run.rc != 0) | ternary(_rpm_paths, []) }}"
+  when: not (ansible_check_mode | default(false))
+
