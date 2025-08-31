@@ -1,0 +1,5 @@
+- name: Run Maven to download the artifact
+  ansible.builtin.include_tasks: run_setools.yml
+
+- name: Clean up files after staging
+  ansible.builtin.include_tasks: cleanup_artifacts.yml
