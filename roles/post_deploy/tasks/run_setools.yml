@@ -1,0 +1,48 @@
+# roles/post_deploy/run_setools.yml
+
+- name: Set SE Tools execution stage
+  ansible.builtin.set_fact:
+    setools_stage: "SETOOLS"
+
+- name: Debug SE Tools execution stage
+  ansible.builtin.debug:
+    msg: "Starting execution stage: {{ setools_stage }}"
+
+- name: Skip SE Tools execution for Windows deployments
+  ansible.builtin.set_fact:
+    skip_setools: "{{ ansible_system == 'Windows' }}"
+
+- name: Exit if SE Tools execution is not needed
+  ansible.builtin.meta: end_play
+  when: skip_setools
+
+- name: Determine sudo command based on package type
+  ansible.builtin.set_fact:
+    sudo_cmd: "{{ '/usr/local/bin/sudo' if options.TYPE in ['solaris', 'pkg'] else '/usr/bin/sudo' }}"
+
+- name: Set SE Tools wrapper command
+  ansible.builtin.set_fact:
+    sewrapper_cmd: >-
+      if {{ sudo_cmd }} -l | grep -q '/var/opt/setools/wrapper.sh'; then
+        if [ -f /var/opt/setools/wrapper.sh ]; then
+          {{ sudo_cmd }} /var/opt/setools/wrapper.sh package -f;
+        else
+          echo 'wrapper.sh not found.';
+        fi;
+      else
+        echo 'No sudo access to wrapper.sh, skipping inventory package';
+      fi
+
+- name: Execute SE Tools wrapper command on all hosts
+  ansible.builtin.shell:
+    cmd: "{{ sewrapper_cmd }}"
+    executable: /bin/sh
+  register: setools_result
+  ignore_errors: true
+
+- name: Debug SE Tools execution result
+  ansible.builtin.debug:
+    msg:
+      - "Stage: {{ setools_stage }}"
+      - "SE Tools execution result:"
+      - "{{ setools_result.stdout_lines }}"
