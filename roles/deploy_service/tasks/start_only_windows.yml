@@ -1,0 +1,80 @@
+#roles/deploy_service/tasks/start_only_windows.yml
+- name: Build start & hooks (Windows)
+  ansible.builtin.set_fact:
+    _start_cmds: >-
+      {{
+        phase_services | map(attribute='containers') | sum(start=[])
+        | map(attribute='serviceCommands') | select('defined')
+        | map(attribute='start') | reject('equalto', None)
+        | map('trim') | reject('equalto','') | list
+      }}
+    _start_before: >-
+      {{
+        phase_services | map(attribute='actionCommands') | sum(start=[])
+        | selectattr('action','equalto','START')
+        | selectattr('runStage','equalto','BEFORE')
+        | map(attribute='command') | list
+      }}
+    _start_after: >-
+      {{
+        phase_services | map(attribute='actionCommands') | sum(start=[])
+        | selectattr('action','equalto','START')
+        | selectattr('runStage','equalto','AFTER')
+        | map(attribute='command') | list
+      }}
+
+- block:
+    - name: (check) BEFORE start hooks (Windows)
+      ansible.builtin.debug: { var: _start_before }
+      when: _start_before | length > 0
+    - name: (check) would start (Windows)
+      ansible.builtin.debug: { var: _start_cmds }
+    - name: (check) AFTER start hooks (Windows)
+      ansible.builtin.debug: { var: _start_after }
+      when: _start_after | length > 0
+    - name: Push simulated start summary (Windows)
+      ansible.builtin.set_stats:
+        data:
+          start_health_summary: >-
+            {{ (hostvars[inventory_hostname].start_health_summary | default([])) + [ {
+              'service': 'batch',
+              'start_ok':   [],
+              'start_fail': []
+            } ] }}
+  when: ansible_check_mode | default(false)
+
+- block:
+    - name: BEFORE start hooks (Windows)
+      ansible.windows.win_powershell:
+        script: |
+          try { {{ item }}; exit 0 } catch { exit 2 }
+      loop: "{{ _start_before }}"
+      failed_when: false
+      when: _start_before | length > 0
+
+    - name: Start services (Windows)
+      ansible.windows.win_powershell:
+        script: |
+          try { {{ item }}; exit 0 } catch { exit 2 }
+      loop: "{{ _start_cmds }}"
+      register: _win_start
+      failed_when: false
+
+    - name: AFTER start hooks (Windows)
+      ansible.windows.win_powershell:
+        script: |
+          try { {{ item }}; exit 0 } catch { exit 2 }
+      loop: "{{ _start_after }}"
+      failed_when: false
+      when: _start_after | length > 0
+
+    - name: Push start summary (Windows)
+      ansible.builtin.set_stats:
+        data:
+          start_health_summary: >-
+            {{ (hostvars[inventory_hostname].start_health_summary | default([])) + [ {
+              'service': 'batch',
+              'start_ok':   (_win_start.results | default([]) | selectattr('rc','defined') | selectattr('rc','eq',0) | map(attribute='item') | list),
+              'start_fail': (_win_start.results | default([]) | selectattr('rc','defined') | rejectattr('rc','eq',0)   | map(attribute='item') | list)
+            } ] }}
+  when: not (ansible_check_mode | default(false))
