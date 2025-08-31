@@ -1,0 +1,17 @@
+# Download all containers for a single service on the current host.
+#roles/deploy_service/tasks/service_download.yml
+- ansible.builtin.setup: { gather_subset: [min] }
+
+- name: Build download list
+  ansible.builtin.set_fact:
+    _dl_list: "{{ service.containers | default([]) }}"
+
+- name: Download each container (check-safe include)
+  ansible.builtin.include_tasks: download_artifact.yml
+  loop: "{{ _dl_list }}"
+  loop_control:
+    loop_var: container
+    label: "{{ container.artifactId | default(container.name) }}:{{ container.version }}"
+  vars:
+    art_url:   "https://artifactory.intcx.net/artifactory"
+    art_token: "{{ artifactory_password }}"
