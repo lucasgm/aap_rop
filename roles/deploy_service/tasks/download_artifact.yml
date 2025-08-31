@@ -1,0 +1,149 @@
+# roles/deploy_service/tasks/download_artifact.yml
+# Inputs:
+#   container: { type, groupId, artifactId, version, name? }
+#   art_url, art_token  (or artifactory_url / artifactory_token)
+# Exports (facts on the host):
+#   dest_path, final_url, download_status
+#   downloaded_rpms (list of RPM paths for single-line install later)
+
+- name: Gather minimal facts (for os_family)
+  ansible.builtin.setup:
+    gather_subset: [min]
+  when: ansible_facts is not defined
+
+- name: Normalise Artifactory vars
+  ansible.builtin.set_fact:
+    _art_url: "{{ art_url | default(artifactory_url) }}"
+    _art_tok: "{{ art_token | default(artifactory_token) }}"
+
+# ---- helpers first -----------------------------------------------------------
+- name: Derive artifact id and extension
+  ansible.builtin.set_fact:
+    _artifact_id: "{{ container.artifactId | default(container.name) }}"
+    _ext: "{{ (container.type | lower) }}"
+
+- name: Determine OS family (lowercased)
+  ansible.builtin.set_fact:
+    _osfam: "{{ (ansible_facts.os_family | default('')) | lower }}"
+
+- name: Compute destination directory
+  ansible.builtin.set_fact:
+    dest_dir: "{{ 'C:\\\\Temp' if _osfam == 'windows' else '/tmp' }}"
+
+- name: Compute filename
+  ansible.builtin.set_fact:
+    dest_filename: "{{ _artifact_id ~ '-' ~ container.version ~ '.' ~ _ext }}"
+
+- name: Compute full destination path
+  ansible.builtin.set_fact:
+    dest_path: >-
+      {{
+        (dest_dir ~ '\\' ~ dest_filename) if _osfam == 'windows'
+        else (dest_dir ~ '/' ~ dest_filename)
+      }}
+
+- name: Assert dest_path is a valid string
+  ansible.builtin.assert:
+    that:
+      - dest_path is string
+      - (dest_path | length) > 1
+    fail_msg: "Computed dest_path is invalid: {{ dest_path | default('undefined') }}"
+
+# ── Check mode: no I/O ───────────────────────────────────────────────────────
+- block:
+    - ansible.builtin.debug:
+        msg: >-
+          (check mode) Would search {{ _art_url }} for
+          {{ container.groupId }}:{{ _artifact_id }}:{{ container.version }}:{{ _ext }}
+          and download to {{ dest_path }}
+    - ansible.builtin.set_fact:
+        final_url: ~
+        download_status: "skipped (check mode)"
+      changed_when: false
+  when: ansible_check_mode | default(false)
+
+# ── Real work ────────────────────────────────────────────────────────────────
+- block:
+    - name: Build GAVC search URL (no whitespace)
+      ansible.builtin.set_fact:
+        search_url: "{{ _art_url ~ '/api/search/gavc'
+          ~ '?g=' ~ (container.groupId | urlencode)
+          ~ '&a=' ~ (_artifact_id | urlencode)
+          ~ '&v=' ~ (container.version | urlencode)
+          ~ '&p=' ~ (_ext | urlencode) }}"
+      changed_when: false
+      delegate_to: localhost
+
+    - name: Search Artifactory (GAVC)
+      ansible.builtin.uri:
+        url: "{{ search_url }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _art_tok }}"
+        return_content: true
+      register: gavc_search
+      delegate_to: localhost
+      retries: 3
+      delay: 3
+      until: gavc_search.status | default(0) == 200
+      changed_when: false
+
+    - name: Get first downloadable URL
+      ansible.builtin.set_fact:
+        final_url: >-
+          {{
+            gavc_search.json.results | default([])
+            | map(attribute='uri')
+            | select('search', '\.' ~ _ext ~ '$')
+            | map('regex_replace', '/api/storage', '')
+            | first
+          }}
+      delegate_to: localhost
+      changed_when: false
+
+    - name: Fail early if nothing found
+      ansible.builtin.assert:
+        that: final_url is string and final_url | length > 0
+        fail_msg: "No downloadable {{ _ext }} found for {{ container.groupId }}:{{ _artifact_id }}:{{ container.version }}"
+
+    # Linux
+    - name: Download artefact (Linux)
+      ansible.builtin.get_url:
+        url:  "{{ final_url }}"
+        dest: "{{ dest_path }}"
+        mode: "0644"
+        headers:
+          Authorization: "Bearer {{ _art_tok }}"
+      when: _osfam != 'windows'
+
+    # Windows
+    # - block:
+    #     - ansible.windows.win_file:
+    #         path: C:\Temp
+    #         state: directory
+    #     - ansible.windows.win_get_url:
+    #         url:  "{{ final_url }}"
+    #         dest: "{{ dest_path }}"
+    #         headers:
+    #           Authorization: "Bearer {{ _art_tok }}"
+    #   when: _osfam == 'windows'
+
+    - name: Mark download result
+      ansible.builtin.set_fact:
+        download_status: "{{ (final_url is defined) | ternary('success','skipped') }}"
+      changed_when: false
+
+    # Record Linux RPM paths for single-line install later
+    - name: Accumulate downloaded RPM path for this host (Linux RPM only)
+      ansible.builtin.set_fact:
+        downloaded_rpms: "{{ (downloaded_rpms | default([])) + [ dest_path ] | unique }}"
+      when:
+        - _osfam != 'windows'
+        - download_status == 'success'
+        - (_ext | lower) == 'rpm'
+
+  rescue:
+    - ansible.builtin.set_fact:
+        download_status: "failed"
+      changed_when: false
+  when: not (ansible_check_mode | default(false))
