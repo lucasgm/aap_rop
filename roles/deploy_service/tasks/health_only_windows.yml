@@ -1,0 +1,50 @@
+#roles/deploy_service/tasks/health_only_windows.yml
+- name: Build health list (Windows)
+  ansible.builtin.set_fact:
+    _health_cmds: >-
+      {{
+        phase_services | map(attribute='containers') | sum(start=[])
+        | map(attribute='serviceCommands') | select('defined')
+        | map(attribute='health') | reject('equalto', None)
+        | map('trim') | reject('equalto','') | list
+      }}
+
+- block:
+    - name: (check) would health-check (Windows)
+      ansible.builtin.debug: { var: _health_cmds }
+    - name: Push simulated health summary (Windows)
+      ansible.builtin.set_stats:
+        data:
+          start_health_summary: >-
+            {{ (hostvars[inventory_hostname].start_health_summary | default([])) + [ {
+              'service': 'batch',
+              'health_ok':   [],
+              'health_fail': []
+            } ] }}
+  when: ansible_check_mode | default(false)
+
+- block:
+    - name: Health check (Windows)
+      ansible.windows.win_powershell:
+        script: |
+          try { if ( {{ item }} ) { exit 0 } else { exit 2 } } catch { exit 2 }
+      loop: "{{ _health_cmds }}"
+      register: _win_health
+      failed_when: false
+      changed_when: false
+
+    - name: Fail if any health checks failed
+      ansible.builtin.fail:
+        msg: "Health failures: {{ (_win_health.results | rejectattr('rc','eq',0) | map(attribute='item') | list) | join(' | ') }}"
+      when: (_win_health.results | rejectattr('rc','eq',0) | list | length) > 0
+
+    - name: Push health summary (Windows)
+      ansible.builtin.set_stats:
+        data:
+          start_health_summary: >-
+            {{ (hostvars[inventory_hostname].start_health_summary | default([])) + [ {
+              'service': 'batch',
+              'health_ok':   (_win_health.results | selectattr('rc','eq',0) | map(attribute='item') | list),
+              'health_fail': (_win_health.results | rejectattr('rc','eq',0) | map(attribute='item') | list)
+            } ] }}
+  when: not (ansible_check_mode | default(false))
