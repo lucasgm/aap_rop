@@ -1,0 +1,26 @@
+#roles/deploy_service/tasks/stop_only_windows.yml
+- name: Build stop list (Windows)
+  ansible.builtin.set_fact:
+    _stop: >-
+      {{
+        phase_services | map(attribute='containers') | sum(start=[])
+        | map(attribute='serviceCommands') | select('defined')
+        | map(attribute='stop') | reject('equalto', None)
+        | map('trim') | reject('equalto','') | list
+      }}
+
+- block:
+    - name: (check) would stop (Windows)
+      ansible.builtin.debug: { var: _stop }
+  when: ansible_check_mode | default(false)
+
+- block:
+    - name: Stop services (Windows)
+      ansible.windows.win_powershell:
+        script: |
+          try { {{ item }}; exit 0 } catch { exit 2 }
+      loop: "{{ _stop }}"
+      register: _win_stop
+      failed_when: false
+      changed_when: false
+  when: not (ansible_check_mode | default(false))
