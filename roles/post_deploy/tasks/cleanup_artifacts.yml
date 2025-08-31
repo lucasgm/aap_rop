@@ -1,0 +1,63 @@
+#roles/post_deploy/tasks/cleanup_artifacts.yml
+---
+# roles/post_deploy/tasks/cleanup_artifacts.yml
+# Remove only the per-host downloaded artifacts recorded in `downloaded_rpms`
+
+- name: Gather list of downloaded artifacts from this host
+  ansible.builtin.set_fact:
+    _host_downloads: "{{ downloaded_rpms | default([]) }}"
+
+- name: Debug host download list
+  ansible.builtin.debug:
+    msg: "Host {{ inventory_hostname }} has {{ _host_downloads | length }} downloaded artifacts: {{ _host_downloads }}"
+
+- name: Remove downloaded artifacts (Linux)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ _host_downloads }}"
+  loop_control:
+    label: "{{ item }}"
+  when: (_host_downloads | length) > 0 and (ansible_facts.os_family | default('')) not in ['Windows','windows']
+  failed_when: false
+
+# - name: Remove downloaded artifacts (Windows)
+#   ansible.windows.win_file:
+#     path: "{{ item }}"
+#     state: absent
+#   loop: "{{ _host_downloads }}"
+#   loop_control:
+#     label: "{{ item }}"
+#   when: (_host_downloads | length) > 0 and (ansible_facts.os_family | default('')) in ['Windows','windows']
+#   failed_when: false
+
+- name: Debug cleanup result
+  ansible.builtin.debug:
+    msg: "Removed {{ _host_downloads | length }} artifacts for {{ inventory_hostname }} (if present)."
+
+#FOR LATER
+# - name: Remove downloaded artifacts (Windows)
+#   ansible.builtin.win_command: >-
+#     powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command
+#     "try {
+#        Remove-Item -LiteralPath '{{ item }}' -Force -Recurse -ErrorAction Stop
+#        Write-Output 'REMOVED: {{ item }}'
+#      } catch {
+#        Write-Output 'REMOVE_FAILED: {{ item }}'
+#        Write-Output $_.Exception.Message
+#        exit 1
+#      }"
+#   loop: "{{ _host_downloads }}"
+#   loop_control:
+#     label: "{{ item }}"
+#   when: (_host_downloads | length) > 0 and (ansible_facts.os_family | default('')) in ['Windows','windows']
+#   register: _win_remove_run
+#   failed_when: false
+
+#   - name: Debug Windows removal result
+#   ansible.builtin.debug:
+#     msg:
+#       - "win_remove rc: {{ _win_remove_run.rc | default('n/a') }}"
+#       - "win_remove stdout_lines: {{ _win_remove_run.stdout_lines | default([]) }}"
+#       - "win_remove stderr_lines: {{ _win_remove_run.stderr_lines | default([]) }}"
+#   when: _win_remove_run is defined
